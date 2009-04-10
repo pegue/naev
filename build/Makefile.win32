@@ -1,40 +1,4 @@
-#
-#   OPTIONS
-#
-DEBUG := 1
-#DEBUG_PARANOID := 1
-export DEBUG
-export DEBUG_PARANOID
-
-
-# OS
-#OS := LINUX
-#OS := FREEBSD
-OS := WIN32
-#OS := MACOSX
-export OS
-
-
-# Data path
-#NDATA_DEF := \"../ndata\"
-
-
-#
-#   VERSION
-#
-VMAJOR      := 0
-VMINOR      := 3
-VREV        := 7
-VERSION     := -DVMAJOR=$(VMAJOR) -DVMINOR=$(VMINOR) -DVREV=$(VREV)
-VERSIONFILE := VERSION
-
-
-#
-#   OBJS
-#
-APPNAME := naev
-OBJS    := $(patsubst %.c,%.o,$(wildcard src/*.c src/tk/*.c src/tk/widget/*.c))
-
+include build/Makefile.common
 
 #
 #   CFLAGS
@@ -46,7 +10,7 @@ CXML   := $(shell xml2-config --cflags)
 CTTF   := $(shell freetype-config --cflags)
 CPNG   := $(shell libpng-config --cflags)
 CGL    :=
-CFLAGS := -Isrc $(CLUA) $(CCSPARSE) $(CSDL) $(CXML) $(CTTF) $(CPNG) $(CGL) $(VERSION) -D$(OS)
+CFLAGS := -Isrc $(CLUA) $(CCSPARSE) $(CSDL) $(CXML) $(CTTF) $(CPNG) $(CGL) $(VERSION) -D$(OS) $(COMMON_FLAGS)
 ifdef NDATA_DEF
 CFLAGS += -DNDATA_DEF=$(NDATA_DEF)
 endif
@@ -62,65 +26,21 @@ LDSDL   := $(shell sdl-config --libs) -lSDL_image -lSDL_mixer
 LDXML   := $(shell xml2-config --libs)
 LDTTF   := $(shell freetype-config --libs)
 LDPNG   := $(shell libpng-config --libs)
-ifeq ($(OS),WIN32)
 LDGL    := -lglu32 -lopengl32
 LDFLAGS := -lmingw32 -mwindows -lm $(LDLUA) $(LDCSPARSE) $(LDSDL) $(LDXML) $(LDTTF) $(LDPNG) $(LDGL)
-else # WIN32
-LDGL    := -lGL
-LDFLAGS := -lm $(LDLUA) $(LDCSPARSE) $(LDSDL) $(LDXML) $(LDTTF) $(LDPNG) $(LDGL)
-endif # WIN32
 
 # Debug stuff
 ifdef DEBUG
-ifeq ($(OS),WIN32)
 CFLAGS += -W -Wall -Wextra -Wunused -Wshadow -Wpointer-arith -Wmissing-prototypes -Winline -Wcast-align -Wmissing-declarations -DLUA_USE_APICHECK -std=c99
-else # WIN32
-CFLAGS += -W -Wall -Wextra -Wunused -Wshadow -Wpointer-arith -Wmissing-prototypes -Winline -Wcast-align -Wmissing-declarations -fstack-protector -fstack-protector-all -g -DDEBUG -DLUA_USE_APICHECK -std=c99 -ansi
-endif # WIN32
 
 ifdef DEBUG_PARANOID
 CFLAGS += -DDEBUG_PARANOID
 endif # DEBUG_PARANOID
 
-# Handle OS Debug stuff here.
-#
-# Linux stuff
-#
-ifeq ($(OS),LINUX)
-LDFLAGS += -rdynamic
-endif # LINUX
-
 else # DEBUG
 CFLAGS += -O2 -funroll-loops -pipe -std=c99 -ansi
 
 endif # DEBUG
-
-ifeq ($(OS),MACOSX)
-LDFLAGS += 	-framework OpenGL \
-				-L/System/Library/Frameworks/OpenGL.framework/Versions/Current/Libraries 
-endif # MACOSX
-
-
-#
-#   DATA
-#
-DATA_MISC :=   AUTHORS VERSION
-DATA_AI   := 	$(wildcard ai/*.lua \
-						ai/*/*.lua )
-DATA_GFX  := 	$(wildcard gfx/*.png \
-						gfx/*/*.png \
-						gfx/*/*/*.png )
-DATA_XML  := 	$(wildcard dat/*.xml dat/*.ttf dat/intro dat/news.lua)
-DATA_SND  := 	$(wildcard snd/music/*.ogg snd/sounds/*.wav) snd/music.lua
-DATA_MISN := 	$(wildcard dat/missions/*.lua \
-						dat/missions/*/*.lua \
-						dat/missions/*/*/*.lua )
-DATA_SCRIPTS := $(wildcard scripts/*.lua \
-						scripts/*/*.lua \
-						scripts/*/*/*.lua )
-DATA      := 	ndata
-DATAFILES := 	$(DATA_MISC) $(DATA_AI) $(DATA_GFX) $(DATA_XML) $(DATA_SND) $(DATA_MISN) $(DATA_SCRIPTS)
-
 
 #
 #   TARGETS
@@ -150,11 +70,7 @@ help:
 
 
 $(APPNAME): $(OBJS)
-ifeq ($(OS),WIN32)
 	$(CC) -o $(APPNAME) $(OBJS) $(LDFLAGS) lib/lua/liblua.a lib/csparse/libcsparse.a
-else
-	@$(CC) $(LDFLAGS) -o $(APPNAME) $(OBJS) lib/lua/liblua.a lib/csparse/libcsparse.a
-endif
 	@echo "   LD   $(APPNAME)"
 
 

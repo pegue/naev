@@ -6,6 +6,7 @@ LOCALDIR := utils/pack/
 COBJS    := $(SRCDIR)pack.o $(SRCDIR)md5.o main.o
 
 CFLAGS   += -W -Wall $(shell sdl-config --cflags)
+LDFLAGS  += $(shell sdl-config --libs)
 ifdef DEBUG
 CFLAGS   += -I$(SRCDIR) -g -DDEBUG
 ifdef DEBUG_PARANOID
@@ -14,7 +15,6 @@ endif
 else
 CFLAGS   += -I$(SRCDIR) -O2
 endif
-LDFLAGS  := $(shell sdl-config --libs)
 
 APPNAME  := pack
 
@@ -27,14 +27,7 @@ APPNAME  := pack
 all: $(ROOTDIR)$(APPNAME)
 
 $(ROOTDIR)$(APPNAME): $(COBJS)
-ifeq ($(OS),WIN32)
-	$(CC) $(CFLAGS) -o $(ROOTDIR)$(APPNAME) $(COBJS) $(LDFLAGS)
-else
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $(ROOTDIR)$(APPNAME) $(COBJS)
-endif
-	@echo "   LD   $(APPNAME)"
-
-
+	@$(CC) $(CFLAGS) -o $(ROOTDIR)$(APPNAME) $(COBJS) $(LDFLAGS)
 	@echo "   LD   $(APPNAME)"
 
 clean:
