@@ -42,11 +42,9 @@ lua_pop(L,1);
 
 #define  conf_loadBool(n,b)   \
 lua_getglobal(L, n); \
-if (lua_isnumber(L, -1)) { \
-   if ((int)lua_tonumber(L, -1) == 1) \
-      b = 1; \
-} \
-else if (lua_isboolean(L, -1)) \
+if (lua_isnumber(L,-1)) \
+   b = (lua_tonumber(L,-1) != 0.); \
+else if (!lua_isnil(L,-1)) \
    b = lua_toboolean(L, -1); \
 lua_pop(L,1);
 
@@ -214,14 +212,14 @@ int conf_loadConfig ( const char* file )
       nosound = i; i = 0;
       conf_loadFloat("sound",d);
       if (d) {
-         sound_defVolume = MAX(MIN(d, 1.), 0.);
+         sound_defVolume = CLAMP( 0., 1., d );
          if (d == 0.)
             sound_disabled = 1;
          d = 0.;
       }
       conf_loadFloat("music",d);
       if (d) {
-         music_defVolume = MAX(MIN(d, 1.), 0.);
+         music_defVolume = CLAMP( 0., 1., d );
          if (d == 0.)
             music_disabled = 1;
          d = 0.;
