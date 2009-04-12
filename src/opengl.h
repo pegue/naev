@@ -16,6 +16,14 @@
 
 #include "ncompat.h"
 
+/*
+ * We put all the other opengl stuff here to only have to include one header.
+ */
+#include "opengl_tex.h"
+#include "opengl_ext.h"
+#include "opengl_vbo.h"
+#include "opengl_render.h"
+
 
 /* Recommended for compatibility and such */
 #if HAS_BIGENDIAN
@@ -41,10 +49,8 @@
 #define OPENGL_AA_LINE     (1<<3) /**< Antialiasing lines. */
 #define OPENGL_AA_POLYGON  (1<<4) /**< Antialiasing polygons. */
 #define OPENGL_VSYNC       (1<<5) /**< Sync to monitor vertical refresh rate. */
-#define OPENGL_FRAG_SHADER (1<<6) /**< Fragment shaders. */
-#define OPENGL_VERT_SHADER (1<<7) /**< Vertex shaders. */
-#define OPENGL_DIM_DEF     (1<<8) /**< Dimensions specifically defined. */
-#define OPENGL_FSAA        (1<<9) /**< Full Screen Anti Aliasing. */
+#define OPENGL_DIM_DEF     (1<<6) /**< Dimensions specifically defined. */
+#define OPENGL_FSAA        (1<<7) /**< Full Screen Anti Aliasing. */
 #define gl_has(f)    (gl_screen.flags & (f)) /**< Check for the flag */
 /**
  * @brief Stores data about the current opengl environment.
@@ -85,91 +91,24 @@ extern glInfo gl_screen; /* local structure set with gl_init and co */
 
 
 /*
- * Texture flags.
- */
-#define OPENGL_TEX_MAPTRANS   (1<<0)  /**< Create a transparency map. */
-
-/**
- * @brief Abstraction for rendering spriteshets.
- *
- * The basic unit all the graphic rendering works with.
- */
-typedef struct glTexture_ {
-   char *name; /**< name of the graphic */
-
-   /* dimensions */
-   double w; /**< Real width of the image. */
-   double h; /**< Real heiht of the image. */
-   double rw; /**< Padded POT width of the image. */
-   double rh; /**< Padded POT height of the image. */
-
-   /* sprites */
-   double sx; /**< Number of sprites on the x axis. */
-   double sy; /**< Number of sprites on the y axis. */
-   double sw; /**< Width of a sprite. */
-   double sh; /**< Height of a sprite. */
-
-   /* data */
-   GLuint texture; /**< the opengl texture itself */
-   uint8_t* trans; /**< maps the transparency */
-
-   /* properties */
-   uint8_t flags; /**< flags used for texture properties */
-} glTexture;
-
-
-
-/*
- * glTexture loading / freeing
- */
-SDL_Surface* gl_prepareSurface( SDL_Surface* surface ); /* Only preps it */
-glTexture* gl_loadImage( SDL_Surface* surface ); /* Frees the surface. */
-glTexture* gl_newImage( const char* path, const unsigned int flags );
-glTexture* gl_newSprite( const char* path, const int sx, const int sy,
-      const unsigned int flags );
-void gl_freeTexture( glTexture* texture );
-glTexture* gl_dupTexture( glTexture *texture );
-
-/*
- * opengl drawing
- */
-/* blits a sprite, relative pos */
-void gl_blitSprite( const glTexture* sprite,
-      const double bx, const double by,
-      const int sx, const int sy, const glColour *c );
-/* blits a sprite, absolute pos */
-void gl_blitStaticSprite( const glTexture* sprite,
-      const double bx, const double by,
-      const int sx, const int sy, const glColour* c );
-/* blits a texture scaled, absolute pos */
-void gl_blitScale( const glTexture* texture,
-      const double bx, const double by,
-      const double bw, const double bh, const glColour* c );
-/* blits the entire image, absolute pos */
-void gl_blitStatic( const glTexture* texture,
-      const double bx, const double by, const glColour *c );
-/* binds the camera to a vector */
-void gl_bindCamera( Vector2d* pos );
-/* circle drawing */
-void gl_drawCircle( const double x, const double y, const double r );
-void gl_drawCircleInRect( const double x, const double y, const double r,
-      const double rx, const double ry, const double rw, const double rh );
-
-
-/*
  * initialization / cleanup
  */
 int gl_init (void);
 void gl_exit (void);
+
+
+/*
+ * Extensions and version.
+ */
+GLboolean gl_hasExt( char *name );
+GLboolean gl_hasVersion( int major, int minor );
+
 
 /*
  * misc
  */
 double gl_setScale( double scalefactor );
 void gl_defViewport (void);
-int gl_pot( int n );
-int gl_isTrans( const glTexture* t, const int x, const int y );
-void gl_getSpriteFromDir( int* x, int* y, const glTexture* t, const double dir );
 void gl_screenshot( const char *filename );
 int SDL_SavePNG( SDL_Surface *surface, const char *file );
 #if DEBUG == 1

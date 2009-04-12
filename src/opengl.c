@@ -58,7 +58,6 @@
 
 
 glInfo gl_screen; /**< Gives data of current opengl settings. */
-Vector2d* gl_camera  = NULL; /**< Camera we are using. */
 static int gl_activated = 0; /**< Whether or not a window is activated. */
 
 /*
@@ -78,22 +77,16 @@ static glTexList* texture_list = NULL; /**< Texture list. */
 /*
  * prototypes
  */
-/* misc */
-static int SDL_VFlipSurface( SDL_Surface* surface );
-static int SDL_IsTrans( SDL_Surface* s, int x, int y );
-static uint8_t* SDL_MapTrans( SDL_Surface* s );
-/* glTexture */
-static GLuint gl_loadSurface( SDL_Surface* surface, int *rw, int *rh );
-static glTexture* gl_loadNewImage( const char* path, unsigned int flags );
-static void gl_blitTexture( const glTexture* texture, 
-      const double x, const double y,
-      const double tx, const double ty, const glColour *c );
+/* gl */
+static int gl_setupAttributes (void);
+static int gl_setupFullscreen( unsigned int *flags, const SDL_VideoInfo *vidinfo );
+static int gl_createWindow( unsigned int flags );
+static int gl_getGLInfo (void);
+static int gl_defState (void);
+static int gl_setupScaling (void);
 /* png */
-int write_png( const char *file_name, png_bytep *rows,
+static int write_png( const char *file_name, png_bytep *rows,
       int w, int h, int colourtype, int bitdepth );
-/* global */
-static GLboolean gl_hasExt( char *name );
-static GLboolean gl_hasVersion( int major, int minor );
 
 
 /*
@@ -101,137 +94,6 @@ static GLboolean gl_hasVersion( int major, int minor );
  * M I S C
  *
  */
-/**
- * @brief Gets the closest power of two.
- *    @param n Number to get closest power of two to.
- *    @return Closest power of two to the number.
- */
-int gl_pot( int n )
-{
-   int i = 1;
-   while (i < n)
-      i <<= 1;
-   return i;
-}
-
-
-/**
- * @brief Flips the surface vertically.
- *
- *    @param surface Surface to flip.
- *    @return 0 on success.
- */
-static int SDL_VFlipSurface( SDL_Surface* surface )
-{
-   /* flip the image */
-   Uint8 *rowhi, *rowlo, *tmpbuf;
-   int y;
-
-   tmpbuf = malloc(surface->pitch);
-   if ( tmpbuf == NULL ) {
-      WARN("Out of memory");
-      return -1;
-   }
-
-   rowhi = (Uint8 *)surface->pixels;
-   rowlo = rowhi + (surface->h * surface->pitch) - surface->pitch;
-   for (y = 0; y < surface->h / 2; ++y ) {
-      memcpy(tmpbuf, rowhi, surface->pitch);
-      memcpy(rowhi, rowlo, surface->pitch);
-      memcpy(rowlo, tmpbuf, surface->pitch);
-      rowhi += surface->pitch;
-      rowlo -= surface->pitch;
-   }
-   free(tmpbuf);
-   /* flipping done */
-
-   return 0;
-}
-
-
-/**
- * @brief Checks to see if a position of the surface is transparent.
- *
- *    @param s Surface to check for transparency.
- *    @param x X position of the pixel to check.
- *    @param y Y position of the pixel to check.
- *    @return 0 if the pixel isn't transparent, 0 if it is.
- */
-static int SDL_IsTrans( SDL_Surface* s, int x, int y )
-{
-   int bpp;
-   Uint8 *p;
-   Uint32 pixelcolour;
-   
-   bpp = s->format->BytesPerPixel; 
-   /* here p is the address to the pixel we want to retrieve */
-   p = (Uint8 *)s->pixels + y*s->pitch + x*bpp; 
-
-   pixelcolour = 0;
-   switch(bpp) {        
-      case 1: 
-         pixelcolour = *p; 
-         break; 
-
-      case 2: 
-         pixelcolour = *(Uint16 *)p; 
-         break; 
-
-      case 3: 
-#if HAS_BIGENDIAN
-         pixelcolour = p[0] << 16 | p[1] << 8 | p[2]; 
-#else /* HAS_BIGENDIAN */
-         pixelcolour = p[0] | p[1] << 8 | p[2] << 16; 
-#endif /* HAS_BIGENDIAN */
-         break; 
-
-      case 4: 
-         pixelcolour = *(Uint32 *)p; 
-         break; 
-   } 
-
-   /* test whether pixels colour == colour of transparent pixels for that surface */
-#if SDL_VERSION_ATLEAST(1,3,0)
-   return ((pixelcolour & s->format->Amask) == 0);
-#else /* SDL_VERSION_ATLEAST(1,3,0) */
-   return (pixelcolour == s->format->colorkey);
-#endif /* SDL_VERSION_ATLEAST(1,3,0) */
-}
-
-
-/**
- * @brief Maps the surface transparency.
- *
- * Basically generates a map of what pixels are transparent.  Good for pixel
- *  perfect collision routines.
- *
- *    @param s Surface to map it's transparency.
- *    @return 0 on success.
- */
-static uint8_t* SDL_MapTrans( SDL_Surface* s )
-{
-   int i,j;
-   int size;
-   uint8_t *t;
-
-   /* alloc memory for just enough bits to hold all the data we need */
-   size = s->w*s->h/8 + ((s->w*s->h%8)?1:0);;
-   t = malloc(size);
-   if (t==NULL) {
-      WARN("Out of Memory");
-      return NULL;
-   }
-   memset(t, 0, size); /* important, must be set to zero */
-
-   /* Check each pixel individually. */
-   for (i=0; i<s->h; i++)
-      for (j=0; j<s->w; j++) /* sets each bit to be 1 if not transparent or 0 if is */
-         t[(i*s->w+j)/8] |= (SDL_IsTrans(s,j,i)) ? 0 : (1<<((i*s->w+j)%8));
-
-   return t;
-}
-
-
 /**
  * @brief Takes a screenshot.
  *
@@ -358,799 +220,33 @@ int SDL_SavePNG( SDL_Surface *surface, const char *file )
 
 /*
  *
- * G L _ T E X T U R E
- *
- */
-/**
- * @brief Prepares the surface to be loaded as a texture.
- *
- *    @param surface to load that is freed in the process.
- *    @return New surface that is prepared for texture loading.
- */
-SDL_Surface* gl_prepareSurface( SDL_Surface* surface )
-{
-   SDL_Surface* temp;
-   int potw, poth;
-   SDL_Rect rtemp;
-#if ! SDL_VERSION_ATLEAST(1,3,0)
-   Uint32 saved_flags;
-   Uint8 saved_alpha;
-#endif /* ! SDL_VERSION_ATLEAST(1,3,0) */
-
-   /* Make size power of two */
-   potw = gl_pot(surface->w);
-   poth = gl_pot(surface->h);
-
-   /* we must blit with an SDL_Rect */
-   rtemp.x = rtemp.y = 0;
-   rtemp.w = surface->w;
-   rtemp.h = surface->h;
-
-   /* saves alpha */
-#if SDL_VERSION_ATLEAST(1,3,0)
-   SDL_SetSurfaceBlendMode(surface, SDL_BLENDMODE_NONE);
-
-   /* create the temp POT surface */
-   temp = SDL_CreateRGBSurface( 0, potw, poth,
-         surface->format->BytesPerPixel*8, RGBAMASK );
-#else /* SDL_VERSION_ATLEAST(1,3,0) */
-   saved_flags = surface->flags & (SDL_SRCALPHA | SDL_RLEACCELOK);
-   saved_alpha = surface->format->alpha;
-   if ((saved_flags & SDL_SRCALPHA) == SDL_SRCALPHA) {
-      SDL_SetAlpha( surface, 0, SDL_ALPHA_OPAQUE );
-      SDL_SetColorKey( surface, 0, surface->format->colorkey );
-   }
-
-   /* create the temp POT surface */
-   temp = SDL_CreateRGBSurface( SDL_SRCCOLORKEY,
-         potw, poth, surface->format->BytesPerPixel*8, RGBAMASK );
-#endif /* SDL_VERSION_ATLEAST(1,3,0) */
-
-   if (temp == NULL) {
-      WARN("Unable to create POT surface: %s", SDL_GetError());
-      return 0;
-   }
-   if (SDL_FillRect( temp, NULL,
-            SDL_MapRGBA(surface->format,0,0,0,SDL_ALPHA_TRANSPARENT))) {
-      WARN("Unable to fill rect: %s", SDL_GetError());
-      return 0;
-   }
-
-   /* change the surface to the new blitted one */
-   SDL_BlitSurface( surface, &rtemp, temp, &rtemp);
-   SDL_FreeSurface( surface );
-   surface = temp;
-
-#if ! SDL_VERSION_ATLEAST(1,3,0)
-   /* set saved alpha */
-   if ( (saved_flags & SDL_SRCALPHA) == SDL_SRCALPHA )
-      SDL_SetAlpha( surface, 0, 0 );
-#endif /* ! SDL_VERSION_ATLEAST(1,3,0) */
-
-   return surface;
-}
-
-/**
- * @brief Loads a surface into an opengl texture.
- *
- *    @param surface Surface to load into a texture.
- *    @param[out] rw Real width of the texture.
- *    @param[out] rh Real height of the texture.
- *    @return The opengl texture id.
- */
-static GLuint gl_loadSurface( SDL_Surface* surface, int *rw, int *rh )
-{
-   GLuint texture;
-
-   /* Prepare the surface. */
-   surface = gl_prepareSurface( surface );
-   if (rw != NULL)
-      (*rw) = surface->w;
-   if (rh != NULL) 
-      (*rh) = surface->h;
-
-   /* opengl texture binding */
-   glGenTextures( 1, &texture ); /* Creates the texture */
-   glBindTexture( GL_TEXTURE_2D, texture ); /* Loads the texture */
-
-   /* Filtering, LINEAR is better for scaling, nearest looks nicer, LINEAR
-    * also seems to create a bit of artifacts around the edges */
-   if (gl_screen.scale != 1.) {
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-   }
-   else {
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-   }
-
-   /* Always wrap just in case. */
-   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-   /* now lead the texture data up */
-   SDL_LockSurface( surface );
-   glTexImage2D( GL_TEXTURE_2D, 0, surface->format->BytesPerPixel,
-         surface->w, surface->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, surface->pixels );
-   SDL_UnlockSurface( surface );
-
-   /* cleanup */
-   SDL_FreeSurface( surface );
-   gl_checkErr();
-
-   return texture;
-}
-
-/**
- * @brief Loads the SDL_Surface to a glTexture.
- *
- *    @param surface Surface to load.
- *    @return The glTexture for surface.
- */
-glTexture* gl_loadImage( SDL_Surface* surface )
-{
-   int rw, rh;
-
-   /* set up the texture defaults */
-   glTexture *texture = malloc(sizeof(glTexture));
-   memset( texture, 0, sizeof(glTexture) );
-
-   texture->w = (double)surface->w;
-   texture->h = (double)surface->h;
-   texture->sx = 1.;
-   texture->sy = 1.;
-
-   texture->texture = gl_loadSurface( surface, &rw, &rh );
-
-   texture->rw = (double)rw;
-   texture->rh = (double)rh;
-   texture->sw = texture->w;
-   texture->sh = texture->h;
-
-   texture->trans = NULL;
-   texture->name  = NULL;
-
-   return texture;
-}
-
-
-/**
- * @brief Loads an image as a texture.
- *
- * May not necessarily load the image but use one if it's already open.
- *
- *    @param path Image to load.
- *    @param flags Flags to control image parameters.
- *    @return Texture loaded from image.
- */
-glTexture* gl_newImage( const char* path, const unsigned int flags )
-{
-   glTexList *cur, *last;
-
-   /* check to see if it already exists */
-   if (texture_list != NULL) {
-      for (cur=texture_list; cur!=NULL; cur=cur->next) {
-         if (strcmp(path,cur->tex->name)==0) {
-            cur->used += 1;
-            return cur->tex;
-         }
-         last = cur;
-      }
-   }
-
-   /* Create the new node */
-   cur = malloc(sizeof(glTexList));
-   cur->next = NULL;
-   cur->used = 1;
-
-   /* Load the image */
-   cur->tex = gl_loadNewImage(path, flags);
-
-   if (texture_list == NULL) /* special condition - creating new list */
-      texture_list = cur;
-   else
-      last->next = cur;
-
-   return cur->tex;
-}
-
-
-/**
- * @brief Only loads the image, does not add to stack unlike gl_newImage.
- *
- *    @param path Image to load.
- *    @param flags Flags to control image parameters.
- *    @return Texture loaded from image.
- */
-static glTexture* gl_loadNewImage( const char* path, const unsigned int flags )
-{
-   SDL_Surface *temp, *surface;
-   glTexture* t;
-   uint8_t* trans;
-   SDL_RWops *rw;
-
-   /* load from packfile */
-   rw = ndata_rwops( path );
-   if (rw == NULL) {
-      ERR("Loading surface from ndata.");
-      return NULL;
-   }
-   temp = IMG_Load_RW( rw, 1 );
-
-   if (temp == NULL) {
-      ERR("'%s' could not be opened: %s", path, IMG_GetError());
-      return NULL;
-   }
-
-   surface = SDL_DisplayFormatAlpha( temp ); /* sets the surface to what we use */
-   if (surface == NULL) {
-      WARN( "Error converting image to screen format: %s", SDL_GetError() );
-      return NULL;
-   }
-
-   SDL_FreeSurface(temp); /* free the temporary surface */
-
-   /* we have to flip our surfaces to match the ortho */
-   if (SDL_VFlipSurface(surface)) {
-      WARN( "Error flipping surface" );
-      return NULL;
-   }
-
-   /* do after flipping for collision detection */
-   if (flags & OPENGL_TEX_MAPTRANS) {
-      SDL_LockSurface(surface);
-      trans = SDL_MapTrans(surface);
-      SDL_UnlockSurface(surface);
-   }
-   else
-      trans = NULL;
-
-   /* set the texture */
-   t = gl_loadImage(surface);
-   t->trans = trans;
-   t->name  = strdup(path);
-   return t;
-}
-
-
-/**
- * @brief Loads the texture immediately, but also sets it as a sprite.
- *
- *    @param path Image to load.
- *    @param sx Number of X sprites in image.
- *    @param sy Number of Y sprites in image.
- *    @param flags Flags to control image parameters.
- *    @return Texture loaded.
- */
-glTexture* gl_newSprite( const char* path, const int sx, const int sy,
-      const unsigned int flags )
-{
-   glTexture* texture;
-   if ((texture = gl_newImage(path, flags)) == NULL)
-      return NULL;
-
-   /* will possibly overwrite an existing textur properties
-    * so we have to load same texture always the same sprites */
-   texture->sx = (double)sx;
-   texture->sy = (double)sy;
-   texture->sw = texture->w/texture->sx;
-   texture->sh = texture->h/texture->sy;
-   return texture;
-}
-
-
-/**
- * @brief Frees a texture.
- *
- *    @param texture Texture to free.
- */
-void gl_freeTexture( glTexture* texture )
-{
-   glTexList *cur, *last;
-
-   /* Shouldn't be NULL (won't segfault though) */
-   if (texture == NULL) {
-      WARN("Attempting to free NULL texture!");
-      return;
-   }
-
-   /* see if we can find it in stack */
-   last = NULL;
-   for (cur=texture_list; cur!=NULL; cur=cur->next) {
-      if (cur->tex == texture) { /* found it */
-         cur->used--;
-         if (cur->used <= 0) { /* not used anymore */
-            /* free the texture */
-            glDeleteTextures( 1, &texture->texture );
-            if (texture->trans != NULL)
-               free(texture->trans);
-            if (texture->name != NULL)
-               free(texture->name);
-            free(texture);
-
-            /* free the list node */
-            if (last == NULL) { /* case there's no texture before it */
-               if (cur->next != NULL)
-                  texture_list = cur->next;
-               else /* case it's the last texture */
-                  texture_list = NULL;
-            }
-            else
-               last->next = cur->next;
-            free(cur);
-         }
-         return; /* we already found it so we can exit */
-      }
-      last = cur;
-   }
-
-   /* Not found */
-   if (texture->name != NULL) /* Surfaces will have NULL names */
-      WARN("Attempting to free texture '%s' not found in stack!", texture->name);
-
-   /* Free anyways */
-   glDeleteTextures( 1, &texture->texture );
-   if (texture->trans != NULL) free(texture->trans);
-   if (texture->name != NULL) free(texture->name);
-   free(texture);
-
-   gl_checkErr();
-}
-
-
-/**
- * @brief Duplicates a texture.
- *
- *    @param texture Texture to duplicate.
- *    @return Duplicate of texture.
- */
-glTexture* gl_dupTexture( glTexture *texture )
-{
-   glTexList *cur, *last;
-
-   /* No segfaults kthxbye. */
-   if (texture == NULL)
-      return NULL;
-
-   /* check to see if it already exists */
-   if (texture_list != NULL) {
-      for (cur=texture_list; cur!=NULL; cur=cur->next) {
-         if (texture == cur->tex) {
-            cur->used += 1;
-            return cur->tex;
-         }
-         last = cur;
-      }
-   }
-
-   /* Invalid texture. */
-   return NULL;
-}
-
-
-/**
- * @brief Checks to see if a pixel is transparent in a texture.
- *
- *    @param t Texture to check for transparency.
- *    @param x X position of the pixel.
- *    @param y Y position of the pixel.
- *    @return 1 if the pixel is transparent or 0 if it isn't.
- */
-int gl_isTrans( const glTexture* t, const int x, const int y )
-{
-   int i;
-
-   /* Get the position in the sheet. */
-   i = y*(int)(t->w) + x ;
-   /* Now we have to pull out the individual bit. */
-   return !(t->trans[ i/8 ] & (1 << (i%8)));
-}
-
-
-/**
- * @brief Sets x and y to be the appropriate sprite for glTexture using dir.
- *
- * Very slow, try to cache if possible like the pilots do instead of using
- *  in O(n^2) or worse functions.
- *
- *    @param[out] x X sprite to use.
- *    @param[out] y Y sprite to use.
- *    @param t Texture to get sprite from.
- *    @param dir Direction to get sprite from.
- */
-void gl_getSpriteFromDir( int* x, int* y, const glTexture* t, const double dir )
-{
-   int s, sx, sy;
-   double shard, rdir;
-
-#ifdef DEBUGGING
-   if ((dir > 2.*M_PI) || (dir < 0.)) {
-      WARN("Angle not between 0 and 2.*M_PI [%f].", dir);
-      return;
-   }
-#endif /* DEBUGGING */
-
-   /* what each image represents in angle */
-   shard = 2.*M_PI / (t->sy*t->sx);
-
-   /* real dir is slightly moved downwards */
-   rdir = dir + shard/2.;
-  
-   /* now calculate the sprite we need */
-   s = (int)(rdir / shard);
-   sx = t->sx;
-   sy = t->sy;
-
-   /* makes sure the sprite is "in range" */
-   if (s > (sy*sx-1))
-      s = s % (sy*sx);
-
-   (*x) = s % sx;
-   (*y) = s / sx;
-}
-
-
-
-/*
- *
- * B L I T T I N G
- *
- */
-/**
- * @brief Blits a texture.
- *
- *    @param texture Texture to blit.
- *    @param x X position of the texture on the screen.
- *    @param y Y position of the texture on the screen.
- *    @param tx X position within the texture.
- *    @param ty Y position within the texture.
- *    @param c Colour to use (modifies texture colour).
- */
-static void gl_blitTexture( const glTexture* texture,
-      const double x, const double y,
-      const double tx, const double ty, const glColour *c )
-{
-   double tw,th;
-
-   /* texture dimensions */
-   tw = texture->sw / texture->rw;
-   th = texture->sh / texture->rh;
-
-   glEnable(GL_TEXTURE_2D);
-   glBindTexture( GL_TEXTURE_2D, texture->texture);
-   glBegin(GL_QUADS);
-      /* set colour or default if not set */
-      if (c==NULL) glColor4d( 1., 1., 1., 1. );
-      else COLOUR(*c);
-
-      glTexCoord2d( tx, ty);
-      glVertex2d( x, y );
-
-      glTexCoord2d( tx + tw, ty);
-      glVertex2d( x + texture->sw, y );
-
-      glTexCoord2d( tx + tw, ty + th);
-      glVertex2d( x + texture->sw, y + texture->sh );
-
-      glTexCoord2d( tx, ty + th);
-      glVertex2d( x, y + texture->sh );
-   glEnd(); /* GL_QUADS */
-   glDisable(GL_TEXTURE_2D);
-
-   /* anything failed? */
-   gl_checkErr();
-}
-/**
- * @brief Blits a sprite, position is relative to the player.
- *
- *    @param sprite Sprite to blit.
- *    @param bx X position of the texture relative to the player.
- *    @param by Y position of the texture relative to the player.
- *    @param sx X position of the sprite to use.
- *    @param sy Y position of the sprite to use.
- *    @param c Colour to use (modifies texture colour).
- */
-void gl_blitSprite( const glTexture* sprite, const double bx, const double by,
-      const int sx, const int sy, const glColour* c )
-{
-   double x,y, tx,ty;
-
-   /* calculate position - we'll use relative coords to player */
-   x = bx - VX(*gl_camera) - sprite->sw/2. + gui_xoff;
-   y = by - VY(*gl_camera) - sprite->sh/2. + gui_yoff;
-
-   /* check if inbounds */
-   if ((fabs(x) > SCREEN_W/2 + sprite->sw) ||
-         (fabs(y) > SCREEN_H/2 + sprite->sh) )
-      return;
-
-   /* texture coords */
-   tx = sprite->sw*(double)(sx)/sprite->rw;
-   ty = sprite->sh*(sprite->sy-(double)sy-1)/sprite->rh;
-
-   gl_blitTexture( sprite, x, y, tx, ty, c );
-}
-
-
-/**
- * @brief Blits a sprite, position is in absolute screen coordinates.
- *
- *    @param sprite Sprite to blit.
- *    @param bx X position of the texture in screen coordinates.
- *    @param by Y position of the texture in screen coordinates.
- *    @param sx X position of the sprite to use.
- *    @param sy Y position of the sprite to use.
- *    @param c Colour to use (modifies texture colour).
- */
-void gl_blitStaticSprite( const glTexture* sprite, const double bx, const double by,
-      const int sx, const int sy, const glColour* c )
-{
-   double x,y, tx,ty;
-
-   x = bx - (double)SCREEN_W/2.;
-   y = by - (double)SCREEN_H/2.;
-
-   /* texture coords */
-   tx = sprite->sw*(double)(sx)/sprite->rw;
-   ty = sprite->sh*(sprite->sy-(double)sy-1)/sprite->rh;
-
-   /* actual blitting */
-   gl_blitTexture( sprite, x, y, tx, ty, c );
-}
-
-
-/**
- * @brief Blits a texture scaling it.
- *
- *    @param texture Texture to blit.
- *    @param bx X position of the texture in screen coordinates.
- *    @param by Y position of the texture in screen coordinates.
- *    @param bw Width to scale to.
- *    @param bh Height to scale to.
- *    @param c Colour to use (modifies texture colour).
- */
-void gl_blitScale( const glTexture* texture,
-      const double bx, const double by,     
-      const double bw, const double bh, const glColour* c )
-{
-   double x,y;
-   double tw,th;
-   double tx,ty;
-
-   /* here we use absolute coords */
-   x = bx - (double)SCREEN_W/2.;
-   y = by - (double)SCREEN_H/2.;
-
-   /* texture dimensions */
-   tw = texture->sw / texture->rw;
-   th = texture->sh / texture->rh;
-   tx = ty = 0.;
-
-   glEnable(GL_TEXTURE_2D);
-   glBindTexture( GL_TEXTURE_2D, texture->texture);
-   glBegin(GL_QUADS);
-      /* set colour or default if not set */
-      if (c==NULL) glColor4d( 1., 1., 1., 1. );
-      else COLOUR(*c);
-
-      glTexCoord2d( tx, ty);
-      glVertex2d( x, y );
-
-      glTexCoord2d( tx + tw, ty);
-      glVertex2d( x + bw, y );
-
-      glTexCoord2d( tx + tw, ty + th);
-      glVertex2d( x + bw, y + bh );
-
-      glTexCoord2d( tx, ty + th);
-      glVertex2d( x, y + bh );
-   glEnd(); /* GL_QUADS */
-   glDisable(GL_TEXTURE_2D);
-
-   /* anything failed? */
-   gl_checkErr();
-}
-
-/**
- * @brief Blits a texture to a position
- *
- *    @param texture Texture to blit.
- *    @param bx X position of the texture in screen coordinates.
- *    @param by Y position of the texture in screen coordinates.
- *    @param c Colour to use (modifies texture colour).
- */
-void gl_blitStatic( const glTexture* texture, 
-      const double bx, const double by, const glColour* c )
-{
-   double x,y;
-
-   /* here we use absolute coords */
-   x = bx - (double)SCREEN_W/2.;
-   y = by - (double)SCREEN_H/2.;
-
-   /* actual blitting */
-   gl_blitTexture( texture, x, y, 0, 0, c );
-}
-
-
-/**
- * @brief Binds the camera to a vector.
- *
- * All stuff displayed with relative functions will be affected by the camera's
- *  position.  Does not affect stuff in screen coordinates.
- *
- *    @param pos Vector to use as camera.
- */
-void gl_bindCamera( Vector2d* pos )
-{
-   gl_camera = pos;
-}
-
-
-/**
- * @brief Draws a circle.
- *
- *    @param cx X position of the center in screen coordinates..
- *    @param cy Y position of the center in screen coordinates.
- *    @param r Radius of the circle.
- */
-void gl_drawCircle( const double cx, const double cy, const double r )
-{
-   double x,y,p;
-
-   x = 0;
-   y = r;
-   p = (5. - (r*4.)) / 4.;
-
-   glBegin(GL_POINTS);
-      glVertex2d( cx,   cy+y );
-      glVertex2d( cx,   cy-y );
-      glVertex2d( cx+y, cy   );
-      glVertex2d( cx-y, cy   );
-
-      while (x<y) {
-         x++;
-         if (p < 0) p += 2*(double)(x)+1;
-         else p += 2*(double)(x-(--y))+1;
-
-         if (x==0) {
-            glVertex2d( cx,   cy+y );
-            glVertex2d( cx,   cy-y );
-            glVertex2d( cx+y, cy   );
-            glVertex2d( cx-y, cy   );
-         }
-         else
-            if (x==y) {
-               glVertex2d( cx+x, cy+y );
-               glVertex2d( cx-x, cy+y );
-               glVertex2d( cx+x, cy-y );
-               glVertex2d( cx-x, cy-y );
-            }
-            else
-               if (x<y) {
-                  glVertex2d( cx+x, cy+y );
-                  glVertex2d( cx-x, cy+y );
-                  glVertex2d( cx+x, cy-y );
-                  glVertex2d( cx-x, cy-y );
-                  glVertex2d( cx+y, cy+x );
-                  glVertex2d( cx-y, cy+x );
-                  glVertex2d( cx+y, cy-x );
-                  glVertex2d( cx-y, cy-x );
-               }
-      }
-   glEnd(); /* GL_POINTS */
-
-   gl_checkErr();
-}
-
-
-/**
- * @brief Only displays the pixel if it's in the screen.
- */
-#define PIXEL(x,y)   \
-if ((x>rx) && (y>ry) && (x<rxw) && (y<ryh))  \
-   glVertex2d(x,y)
-/**
- * @brief Draws a circle in a rectangle.
- *
- *    @param cx X position of the center in screen coordinates..
- *    @param cy Y position of the center in screen coordinates.
- *    @param r Radius of the circle.
- *    @param rx X position of the rectangle limiting the circle in screen coords.
- *    @param ry Y position of the rectangle limiting the circle in screen coords.
- *    @param rw Width of the limiting rectangle.
- *    @param rh Height of the limiting rectangle.
- */
-void gl_drawCircleInRect( const double cx, const double cy, const double r,
-      const double rx, const double ry, const double rw, const double rh )
-{
-   double rxw,ryh, x,y,p;
-
-   rxw = rx+rw;
-   ryh = ry+rh;
-
-   /* is offscreen? */
-   if ((cx+r < rx) || (cy+r < ry) || (cx-r > rxw) || (cy-r > ryh))
-      return;
-   /* can be drawn normally? */
-   else if ((cx-r > rx) && (cy-r > ry) && (cx+r < rxw) && (cy+r < ryh)) {
-      gl_drawCircle( cx, cy, r );
-      return;
-   }
-
-   x = 0;
-   y = r;    
-   p = (5. - (r*4.)) / 4.;
-
-   glBegin(GL_POINTS);
-      PIXEL( cx,   cy+y );
-      PIXEL( cx,   cy-y );
-      PIXEL( cx+y, cy   );
-      PIXEL( cx-y, cy   );
-
-      while (x<y) {
-         x++;
-         if (p < 0) p += 2*(double)(x)+1;
-         else p += 2*(double)(x-(--y))+1;
-
-         if (x==0) {
-            PIXEL( cx,   cy+y );
-            PIXEL( cx,   cy-y );
-            PIXEL( cx+y, cy   );
-            PIXEL( cx-y, cy   );
-         }         
-         else      
-            if (x==y) {
-               PIXEL( cx+x, cy+y );
-               PIXEL( cx-x, cy+y );
-               PIXEL( cx+x, cy-y );
-               PIXEL( cx-x, cy-y );
-            }        
-            else     
-               if (x<y) {
-                  PIXEL( cx+x, cy+y );
-                  PIXEL( cx-x, cy+y );
-                  PIXEL( cx+x, cy-y );
-                  PIXEL( cx-x, cy-y );
-                  PIXEL( cx+y, cy+x );
-                  PIXEL( cx-y, cy+x );
-                  PIXEL( cx+y, cy-x );
-                  PIXEL( cx-y, cy-x );
-               }
-      }
-   glEnd(); /* GL_POINTS */
-
-   gl_checkErr();
-}
-#undef PIXEL
-
-
-/*
- *
  * G L O B A L
  *
  */
-
-
 /**
  * @brief Checks to see if opengl version is at least major.minor.
  *
  *    @param major Major version to check.
  *    @param minor Minor version to check.
+ *    @return True if major and minor version are met.
  */
-static GLboolean gl_hasVersion( int major, int minor )
+static double gl_contextVersion = -1.;
+GLboolean gl_hasVersion( int major, int minor )
 {
    const char *p;
    double f, c;
 
-   p = (const char*) glGetString(GL_VERSION);
+   if (gl_contextVersion < 0.) {
+      p = (const char*) glGetString(GL_VERSION);
 
-   /* Get version and compare version. */
-   f = atof(p);
+      /* Get version and compare version. */
+      gl_contextVersion = atof(p);
+   }
+
    c  = (double) major;
    c += 0.1 * (double) minor;
 
-   if (f <= c)
+   if (f <= gl_contextVersion)
       return GL_TRUE;
    return GL_FALSE;
 }
@@ -1162,7 +258,7 @@ static GLboolean gl_hasVersion( int major, int minor )
  *    @param name Extension to check for.
  *    @return GL_TRUE if found, GL_FALSE if isn't.
  */
-static GLboolean gl_hasExt( char *name )
+GLboolean gl_hasExt( char *name )
 {
    /*
     * Search for name in the extensions string.  Use of strstr()
@@ -1234,77 +330,12 @@ void gl_checkErr (void)
 
 
 /**
- * @brief Initializes opengl extensions.
+ * @brief Tries to set up the OpenGL attributes for the OpenGL context.
  *
  *    @return 0 on success.
  */
-static int gl_initExtensions (void)
+static int gl_setupAttributes (void)
 {
-   /* Clear values. */
-   nglActiveTexture = NULL;
-   nglMultiTexCoord2d = NULL;
-   nglGenBuffers = NULL;
-   nglBindBuffer = NULL;
-   nglBufferData = NULL;
-   nglBufferSubData = NULL;
-   nglDeleteBuffers = NULL;
-
-   /* Multitexture. */
-   if (gl_hasExt("GL_ARB_multitexture")) {
-      nglActiveTexture = SDL_GL_GetProcAddress("glActiveTexture");
-      nglMultiTexCoord2d = SDL_GL_GetProcAddress("glMultiTexCoord2d");
-   }
-   else
-      WARN("GL_ARB_multitexture not found!");
-
-   /* Vertex Buffers. */
-   if (gl_hasVersion( 1, 5)) {
-      nglGenBuffers = SDL_GL_GetProcAddress("glGenBuffers");
-      nglBindBuffer = SDL_GL_GetProcAddress("glBindBuffer");
-      nglBufferData = SDL_GL_GetProcAddress("glBufferData");
-      nglBufferSubData = SDL_GL_GetProcAddress("glBufferSubData");
-      nglDeleteBuffers = SDL_GL_GetProcAddress("glDeleteBuffers");
-   }
-   else if (gl_hasExt("GL_ARB_vertex_buffer_object")) {
-      nglGenBuffers = SDL_GL_GetProcAddress("glGenBuffersARB");
-      nglBindBuffer = SDL_GL_GetProcAddress("glBindBufferARB");
-      nglBufferData = SDL_GL_GetProcAddress("glBufferDataARB");
-      nglBufferSubData = SDL_GL_GetProcAddress("glBufferSubDataARB");
-      nglDeleteBuffers = SDL_GL_GetProcAddress("glDeleteBuffersARB");
-   }
-   else
-      WARN("GL_ARB_vertex_buffer_object not found!");
-
-   return 0;
-}
-
-
-/**
- * @brief Initializes SDL/OpenGL and the works.
- *    @return 0 on success.
- */
-int gl_init (void)
-{
-   int doublebuf, depth, i, j, off, toff, supported, fsaa;
-   SDL_Rect** modes;
-   int flags;
-   const SDL_VideoInfo *vidinfo;
-
-   /* Defaults. */
-   supported = 0;
-   flags  = SDL_OPENGL;
-   flags |= SDL_FULLSCREEN * (gl_has(OPENGL_FULLSCREEN) ? 1 : 0);
-
-   /* Initializes Video */
-   if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0) {
-      WARN("Unable to initialize SDL Video: %s", SDL_GetError());
-      return -1;
-   }
-
-   /* Get the video information. */
-   vidinfo = SDL_GetVideoInfo();
-
-   /* Set opengl flags. */
    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1); /* Ideally want double buffering. */
    if (gl_has(OPENGL_FSAA)) {
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
@@ -1317,66 +348,87 @@ int gl_init (void)
       SDL_GL_SetAttribute(SDL_GL_SWAP_CONTROL, 1);
 #endif /* SDL_VERSION_ATLEAST(1,3,0) */
 
-   if (gl_has(OPENGL_FULLSCREEN)) {
-      /* Try to use desktop resolution if nothing is specifically set. */
-#if SDL_VERSION_ATLEAST(1,2,10)
-      if (!gl_has(OPENGL_DIM_DEF)) {
-         gl_screen.w = vidinfo->current_w;
-         gl_screen.h = vidinfo->current_h;
-      }
-#endif /* SDL_VERSION_ATLEAST(1,2,10) */
+   return 0;
+}
 
-      /* Get available modes and see what we can use. */
-      modes = SDL_ListModes( NULL, SDL_OPENGL | SDL_FULLSCREEN );
-      if (modes == NULL) { /* rare case, but could happen */
-         WARN("No fullscreen modes available");
-         if (flags & SDL_FULLSCREEN) {
-            WARN("Disabling fullscreen mode");
-            flags &= ~SDL_FULLSCREEN;
-         }
-      }
-      else if (modes == (SDL_Rect **)-1)
-         DEBUG("All fullscreen modes available");
-      else {
-         DEBUG("Available fullscreen modes:");
-         for (i=0; modes[i]; i++) {
-            DEBUG("  %d x %d", modes[i]->w, modes[i]->h);
-            if ((flags & SDL_FULLSCREEN) && (modes[i]->w == SCREEN_W) &&
-                  (modes[i]->h == SCREEN_H))
-               supported = 1; /* mode we asked for is supported */
-         }
-      }
-      /* makes sure fullscreen mode is supported */
-      if ((flags & SDL_FULLSCREEN) && !supported) {
 
-         /* try to get closest aproximation to mode asked for */
-         off = -1;
-         j = 0;
-         for (i=0; modes[i]; i++) {
-            toff = ABS(SCREEN_W-modes[i]->w) + ABS(SCREEN_H-modes[i]->h);
-            if ((off == -1) || (toff < off)) {
-               j = i;
-               off = toff;
-            }
-         }
-         WARN("Fullscreen mode %dx%d is not supported by your setup\n"
-               "   switching to %dx%d",
-               SCREEN_W, SCREEN_H,
-               modes[j]->w, modes[j]->h );
-         gl_screen.w = modes[j]->w;
-         gl_screen.h = modes[j]->h;
-      }
-   }
+/**
+ * @brief Tries to set up fullscreen environment.
+ *
+ *    @param flags Flags to modify.
+ *    @param vidinfo Video information.
+ *    @return 0 on success.
+ */
+static int gl_setupFullscreen( unsigned int *flags, const SDL_VideoInfo *vidinfo )
+{
+   int i, j, off, toff, supported;
+   SDL_Rect** modes;
 
-   /* Check to see if trying to create above screen resolution without player
-    * asking for such a large size. */
+   /* Unsupported by default. */
+   supported = 0;
+
+   /* Try to use desktop resolution if nothing is specifically set. */
 #if SDL_VERSION_ATLEAST(1,2,10)
    if (!gl_has(OPENGL_DIM_DEF)) {
-      gl_screen.w = MIN(gl_screen.w, vidinfo->current_w);
-      gl_screen.h = MIN(gl_screen.h, vidinfo->current_h);
+      gl_screen.w = vidinfo->current_w;
+      gl_screen.h = vidinfo->current_h;
    }
 #endif /* SDL_VERSION_ATLEAST(1,2,10) */
-   
+
+   /* Get available modes and see what we can use. */
+   modes = SDL_ListModes( NULL, SDL_OPENGL | SDL_FULLSCREEN );
+   if (modes == NULL) { /* rare case, but could happen */
+      WARN("No fullscreen modes available");
+      if ((*flags) & SDL_FULLSCREEN) {
+         WARN("Disabling fullscreen mode");
+         (*flags) &= ~SDL_FULLSCREEN;
+      }
+   }
+   else if (modes == (SDL_Rect **)-1)
+      DEBUG("All fullscreen modes available");
+   else {
+      DEBUG("Available fullscreen modes:");
+      for (i=0; modes[i]; i++) {
+         DEBUG("  %d x %d", modes[i]->w, modes[i]->h);
+         if (((*flags) & SDL_FULLSCREEN) && (modes[i]->w == SCREEN_W) &&
+               (modes[i]->h == SCREEN_H))
+            supported = 1; /* mode we asked for is supported */
+      }
+   }
+   /* makes sure fullscreen mode is supported */
+   if (((*flags) & SDL_FULLSCREEN) && !supported) {
+
+      /* try to get closest aproximation to mode asked for */
+      off = -1;
+      j = 0;
+      for (i=0; modes[i]; i++) {
+         toff = ABS(SCREEN_W-modes[i]->w) + ABS(SCREEN_H-modes[i]->h);
+         if ((off == -1) || (toff < off)) {
+            j = i;
+            off = toff;
+         }
+      }
+      WARN("Fullscreen mode %dx%d is not supported by your setup\n"
+            "   switching to %dx%d",
+            SCREEN_W, SCREEN_H,
+            modes[j]->w, modes[j]->h );
+      gl_screen.w = modes[j]->w;
+      gl_screen.h = modes[j]->h;
+   }
+
+   return 0;
+}
+
+
+/**
+ * @brief Creates the OpenGL window.
+ *
+ *    @return 0 on success.
+ */
+static int gl_createWindow( unsigned int flags )
+{
+   int depth;
+
    /* Test the setup - aim for 32. */
    gl_screen.depth = 32;
    depth = SDL_VideoModeOK( SCREEN_W, SCREEN_H, gl_screen.depth, flags);
@@ -1406,7 +458,19 @@ int gl_init (void)
    gl_screen.rh = SCREEN_H;
    gl_activated = 1; /* Opengl is now activated. */
 
-   /* Get info about the OpenGL window */
+   return 0;
+}
+
+
+/**
+ * @brief Gets some information about the OpenGL window.
+ *
+ *    @return 0 on success.
+ */
+static int gl_getGLInfo (void)
+{
+   int doublebuf, fsaa;
+
    SDL_GL_GetAttribute( SDL_GL_RED_SIZE, &gl_screen.r );
    SDL_GL_GetAttribute( SDL_GL_GREEN_SIZE, &gl_screen.g );
    SDL_GL_GetAttribute( SDL_GL_BLUE_SIZE, &gl_screen.b );
@@ -1417,12 +481,6 @@ int gl_init (void)
       gl_screen.flags |= OPENGL_DOUBLEBUF;
    /* Calculate real depth. */
    gl_screen.depth = gl_screen.r + gl_screen.g + gl_screen.b + gl_screen.a;
-
-   /* Get info about some extensions */
-   if (gl_hasExt("GL_ARB_vertex_program")==GL_TRUE)
-      gl_screen.flags |= OPENGL_VERT_SHADER;
-   if (gl_hasExt("GL_ARB_fragment_program")==GL_TRUE)
-      gl_screen.flags |= OPENGL_FRAG_SHADER;
 
    /* Texture information */
    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &gl_screen.tex_max);
@@ -1437,6 +495,7 @@ int gl_init (void)
          fsaa, gl_screen.tex_max);
    DEBUG("Renderer: %s", glGetString(GL_RENDERER));
    DEBUG("Version: %s", glGetString(GL_VERSION));
+
    /* Now check for things that can be bad. */
    if (gl_screen.multitex_max < OPENGL_REQ_MULTITEX)
       WARN("Missing texture units (%d required, %d found)",
@@ -1444,14 +503,18 @@ int gl_init (void)
    if (gl_has(OPENGL_FSAA) && (fsaa != gl_screen.fsaa))
       WARN("Unable to get requested FSAA level (%d requested, got %d)",
             gl_screen.fsaa, fsaa );
-   /* Initialize extensions. */
-   gl_initExtensions();
-   DEBUG("");
 
-   /* Some OpenGL options. */
-   glClearColor( 0., 0., 0., 1. );
+   return 0;
+}
 
-   /* Set default opengl state. */
+
+/**
+ * @brief Sets the opengl state to it's default parameters.
+ *
+ *    @return 0 on success.
+ */
+static int gl_defState (void)
+{
    glDisable( GL_DEPTH_TEST ); /* set for doing 2d */
 /* glEnable(  GL_TEXTURE_2D ); never enable globally, breaks non-texture blits */
    glDisable( GL_LIGHTING ); /* no lighting, it's done when rendered */
@@ -1461,6 +524,17 @@ int gl_init (void)
    glShadeModel( GL_FLAT ); /* default shade model, functions should keep this when done */
    glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA ); /* good blend model */
 
+   return 0;
+}
+
+
+/**
+ * @brief Checks ot see if window needs to handle scaling.
+ *
+ *    @return 0 on success.
+ */
+static int gl_setupScaling (void)
+{
    /* New window is real window scaled. */
    gl_screen.nw = (double)gl_screen.rw * gl_screen.scale;
    gl_screen.nh = (double)gl_screen.rh * gl_screen.scale;
@@ -1491,12 +565,78 @@ int gl_init (void)
    gl_screen.hscale  = (double)gl_screen.nh / (double)gl_screen.h;
    gl_screen.mxscale = (double)gl_screen.w / (double)gl_screen.rw;
    gl_screen.myscale = (double)gl_screen.h / (double)gl_screen.rh;
+
+   return 0;
+}
+
+
+/**
+ * @brief Initializes SDL/OpenGL and the works.
+ *    @return 0 on success.
+ */
+int gl_init (void)
+{
+   unsigned int flags;
+   const SDL_VideoInfo *vidinfo;
+
+   /* Defaults. */
+   flags  = SDL_OPENGL;
+   flags |= SDL_FULLSCREEN * (gl_has(OPENGL_FULLSCREEN) ? 1 : 0);
+
+   /* Initializes Video */
+   if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0) {
+      WARN("Unable to initialize SDL Video: %s", SDL_GetError());
+      return -1;
+   }
+
+   /* Get the video information. */
+   vidinfo = SDL_GetVideoInfo();
+
+   /* Set opengl flags. */
+   gl_setupAttributes();
+
+   /* See if should set up fullscreen. */
+   if (gl_has(OPENGL_FULLSCREEN))
+      gl_setupFullscreen( &flags, vidinfo );
+
+   /* Check to see if trying to create above screen resolution without player
+    * asking for such a large size. */
+#if SDL_VERSION_ATLEAST(1,2,10)
+   if (!gl_has(OPENGL_DIM_DEF)) {
+      gl_screen.w = MIN(gl_screen.w, vidinfo->current_w);
+      gl_screen.h = MIN(gl_screen.h, vidinfo->current_h);
+   }
+#endif /* SDL_VERSION_ATLEAST(1,2,10) */
+
+   /* Create the window. */
+   gl_createWindow( flags );
+
+   /* Get info about the OpenGL window */
+   gl_getGLInfo();
+
+   /* Some OpenGL options. */
+   glClearColor( 0., 0., 0., 1. );
+
+   /* Set default opengl state. */
+   gl_defState();
+
+   /* Set up possible scaling. */
+   gl_setupScaling();
+
    /* Handle setting the default viewport. */
    gl_defViewport();
 
    /* Finishing touches. */
    glClear( GL_COLOR_BUFFER_BIT ); /* must clear the buffer first */
    gl_checkErr();
+
+   /* Initialize subsystems.*/
+   gl_initExtensions();
+   gl_initTextures();
+   gl_initRender();
+
+   /* Cosmetic new line. */
+   DEBUG("");
 
    return 0;
 }
@@ -1542,6 +682,11 @@ void gl_exit (void)
 {
    glTexList *tex;
 
+   /* Exit the OpenGL subsystems. */
+   gl_exitRender();
+   gl_exitTextures();
+   gl_exitExtensions();
+
    /* Make sure there's no texture leak */
    if (texture_list != NULL) {
       DEBUG("Texture leak detected!");
@@ -1565,7 +710,7 @@ void gl_exit (void)
  *    @param bitdepth Bit depth of the png.
  *    @return 0 on success.
  */
-int write_png( const char *file_name, png_bytep *rows,
+static int write_png( const char *file_name, png_bytep *rows,
       int w, int h, int colourtype, int bitdepth )
 {
    png_structp png_ptr;
